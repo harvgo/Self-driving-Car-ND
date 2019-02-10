@@ -1,0 +1,2 @@
+model_checkpoint_path: "TSClassifier"
+all_model_checkpoint_paths: "TSClassifier"

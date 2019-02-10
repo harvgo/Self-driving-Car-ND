@@ -1,0 +1,116 @@
+import os
+import csv
+import cv2
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
+import numpy as np
+import sklearn
+
+from keras.models import Sequential
+from keras.layers import Conv2D, Lambda, Cropping2D, Flatten, Dense, Dropout
+from keras.callbacks import EarlyStopping
+from keras.optimizers import Adam
+from keras.utils import plot_model
+
+
+samples = []
+def add_to_samples(csv_filepath, samples):
+    with open(csv_filepath) as csvfile:
+        reader = csv.reader(csvfile)
+        for line in reader:
+            samples.append(line)
+    return samples
+
+samples = add_to_samples('./data/driving_log.csv', samples)
+samples = samples[1:]
+
+train_samples, validation_samples = train_test_split(samples, test_size=0.2)
+step_size = 6
+
+def preprocess(image):
+    bright_img = cv2.cvtColor(image,cv2.COLOR_BGR2HSV)
+    random_bright = 0.25 + np.random.uniform()
+    bright_img[:,:,2] = bright_img[:,:,2]*random_bright
+    bright_img = cv2.cvtColor(bright_img,cv2.COLOR_HSV2RGB)
+    aug_img = cv2.flip(bright_img, 1)
+    return bright_img, aug_img
+
+def get_data(path, batch_sample):
+    imgs = []
+    file_c = path + batch_sample[0].split('/')[-1]
+    file_l = path + batch_sample[1].split('/')[-1]
+    file_r = path + batch_sample[2].split('/')[-1]
+    img_c = cv2.imread(file_c)
+    img_c, img_c_aug = preprocess(img_c)
+    img_l = cv2.imread(file_l)
+    img_l, img_l_aug = preprocess(img_l)
+    img_r = cv2.imread(file_r)
+    img_r, img_r_aug = preprocess(img_r)
+    imgs.extend([img_c, img_l, img_r, img_c_aug, img_l_aug, img_r_aug])
+    
+    steers = []
+    steer_c = float(batch_sample[3])
+    steer_l = steer_c + 0.2
+    steer_r = steer_c - 0.2
+    steer_c_aug = steer_c * -1.0
+    steer_l_aug = steer_l * -1.0
+    steer_r_aug = steer_r * -1.0
+    steers.extend([steer_c, steer_l, steer_r, steer_c_aug, steer_l_aug, steer_r_aug])
+    return imgs, steers
+
+def generator(samples, batch_size=128):
+    batch_size = batch_size // step_size
+    num_samples = len(samples)
+    while True:
+        shuffle(samples)
+        for offset in range(0, num_samples, batch_size):
+            batch_samples = samples[offset:offset+batch_size]
+
+            images = []
+            angles = []
+            for batch_sample in batch_samples:
+                path = './data/IMG/'
+                imgs, steers = get_data(path, batch_sample)
+                images.extend(imgs)
+                angles.extend(steers)
+
+            X_train = np.array(images)
+            y_train = np.array(angles)
+            
+            yield shuffle(X_train, y_train)
+
+train_generator = generator(train_samples, batch_size=32)
+validation_generator = generator(validation_samples, batch_size=32)
+
+# MODEL
+model = Sequential()
+model.add(Lambda(lambda x: x / 255.0 - 0.5, input_shape=(160,320,3)))
+model.add(Cropping2D(cropping=((70, 25), (0, 0))))
+model.add(Conv2D(24, (5,5), strides=(2,2), activation = 'elu'))
+model.add(Conv2D(36, (5,5), strides=(2,2), activation = 'elu'))
+model.add(Conv2D(48, (5,5), strides=(2,2), activation = 'elu'))
+model.add(Dropout(0.2))
+model.add(Conv2D(64, (3,3), activation = 'elu'))
+model.add(Conv2D(64, (3,3), activation = 'elu'))
+model.add(Dropout(0.5))
+model.add(Flatten())
+model.add(Dense(100))
+model.add(Dense(50))
+model.add(Dense(10))
+model.add(Dropout(0.5))
+model.add(Dense(1))
+
+model.compile(loss='mse', optimizer=Adam(lr=0.0001))
+model.summary()
+
+plot_model(model, to_file='model.png')
+print('Saved model visualization at model.png')
+
+early_stopping = EarlyStopping(monitor='val_loss', patience=2)
+model.fit_generator(train_generator, validation_data=validation_generator,
+                    steps_per_epoch= len(train_samples)*step_size/32,
+                    epochs=10, validation_steps=len(validation_samples)*step_size/32,
+                    callbacks=[early_stopping])
+
+model.save('model.h5')
